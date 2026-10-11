@@ -36,7 +36,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.4.2"
+VERSAO = "0.5.0"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -252,6 +252,33 @@ class Assistente(Agent):
         self.est.contexto["compromissos"] = []
         return (f"Cancelada: {comp[0]['texto']}. Confirme ao médico, pergunte se quer deixar um retorno marcado e registre o "
                 f"resultado ('retornar' ou 'sem_interesse').")
+
+    @function_tool
+    async def agendar_retorno(self, context: RunContext, quando: str, motivo: str) -> str:
+        """Combina que VOCÊ (a Martha) liga de novo para o médico num dia e hora. Use quando ele não puder falar agora e
+        aceitar ou pedir que você ligue depois ("me liga daqui a uma hora", "depois do almoço", "amanhã às 8").
+        Converta para dia e hora exatos usando o horário atual e o calendário do contexto e confirme com ele ANTES de usar.
+        Horário permitido: dias úteis das 8h às 20h e sábado das 8h às 12h; de 10 minutos a 7 dias à frente.
+
+        Args:
+            quando: data e hora combinadas em ISO 8601 com fuso -03:00, ex.: 2026-10-13T15:40:00-03:00.
+            motivo: por que vai retornar, nas palavras dele (ex.: "está em consulta").
+        """
+        try:
+            q = dt.datetime.fromisoformat(quando)
+            if q.tzinfo is None:
+                q = q.replace(tzinfo=dt.timezone(dt.timedelta(hours=-3)))
+        except ValueError:
+            return "Data inválida: use ISO 8601 com fuso, por exemplo 2026-10-13T15:40:00-03:00. Tente de novo."
+        r = await banco.rpc("retorno_agendar", {"p_ligacao_id": self.est.ligacao_id, "p_quando": q.isoformat(), "p_motivo": motivo}) or {}
+        if not r.get("ok"):
+            return (f"Não deu para combinar esse horário: {r.get('motivo') or 'erro'}. Proponha outro horário permitido (dias úteis "
+                    "das 8h às 20h, sábado das 8h às 12h). Se não houver acordo, ofereça que a consultora retorne (horarios_livres e "
+                    "marcar_reuniao com modalidade retorno).")
+        self.est.registrado = True   # crm.retorno_agendar já registra "retornar" na ligação
+        log.info("retorno agendado %s: %s", self.est.ligacao_id, r.get("texto"))
+        return (f"Combinado e registrado: você liga {r.get('texto')}. Confirme numa frase curta ('Combinado, Doutor, te ligo "
+                f"{r.get('texto')}'), despeça-se e use encerrar_ligacao.")
 
     @function_tool
     async def religar(self, context: RunContext, motivo: str) -> str:
@@ -518,6 +545,8 @@ async def entrypoint(ctx: JobContext) -> None:
     contexto = await banco.rpc("ligacao_contexto", {"p_ligacao_id": ligacao_id}) or {}
     if meta.get("religada"):   # v0.4.2: a Martha desligou por áudio ruim e está ligando de novo
         contexto.setdefault("ligacao", {})["religada"] = True
+    if meta.get("retorno"):   # v0.5.0: retorno combinado com o médico numa ligação anterior
+        contexto.setdefault("ligacao", {})["retorno"] = True
     est = Estado(ligacao_id, ctx, contexto)
     await ctx.connect()
 

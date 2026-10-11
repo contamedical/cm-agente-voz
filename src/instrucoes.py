@@ -128,7 +128,10 @@ ENCERRAMENTO
 - Se a reunião já foi confirmada, NÃO repita o combinado: agradeça e despeça-se numa frase curta. Se não houve reunião,
   diga em uma frase o que ficou combinado (retorno, resumo pelo WhatsApp) com dia e hora.
 - Use encerrar_ligacao só depois de terminar a despedida. Não encerre enquanto o médico ainda estiver falando.
-- Se ele estiver ocupado: pergunte se prefere que a consultora retorne mais tarde ou amanhã cedo, registre e encerre.
+- Se ele não puder falar agora: pergunte quando VOCÊ pode ligar de volta (dias úteis das 8h às 20h, sábado das 8h às 12h).
+  Converta o que ele disser ("daqui a uma hora", "depois do almoço", "amanhã cedo") em dia e hora exatos, usando o horário
+  atual e o calendário, confirme ("Então te ligo hoje às 15h40, combinado?") e use agendar_retorno. Quem liga de volta é
+  você; só ofereça a consultora se ele pedir para falar com uma pessoa ou se agendar_retorno não aceitar o horário.
 """
 
 # Só para médicos da listagem da Onsaúde (decisão do Leonardo, 03/10): valores e argumentos da onda Onsaúde.
@@ -266,6 +269,15 @@ def abertura(ctx: dict[str, Any]) -> str:
                      or (lead.get("fase") not in (None, "novo")))
     base = ("Atenda agora, em português: cumprimente conforme o horário ('bom dia', 'boa tarde' ou 'boa noite'), "
             f"diga 'aqui é a {NOME}, assistente virtual da Conta Medical' (com o L final bem pronunciado) e avise que a ligação é gravada para a qualidade do atendimento")
+    if (ctx.get("ligacao") or {}).get("retorno"):
+        # v0.5.0: retorno combinado numa ligação anterior
+        lead = ctx.get("lead") or {}
+        nome = (lead.get("nome") or "").strip()
+        primeiro = nome.split()[0] if nome and not nome.replace("+", "").isdigit() else ""
+        return ("Abra a ligação: cumprimente conforme o horário, diga 'aqui é a " + NOME + ", da Conta Medical. Como combinamos, "
+                "estou te ligando agora'" + (f" (trate por Doutor(a) {primeiro})" if primeiro else "") + ", lembre numa frase curta "
+                "que a ligação é gravada para a qualidade do atendimento, pergunte se agora ele pode falar e retome o assunto da "
+                "conversa anterior, sem repetir a apresentação da Conta Medical.")
     if (ctx.get("ligacao") or {}).get("religada"):
         # v0.4.2: a ligação anterior caiu por áudio ruim e a Martha está ligando de novo
         return ("Abra a ligação: diga 'Pronto, Doutor, liguei de novo. Está me ouvindo bem agora?', lembre numa frase curta "

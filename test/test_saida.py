@@ -71,3 +71,14 @@ def test_abertura_da_ligacao_refeita():
 def test_roteiro_manda_religar_e_nao_consultora():
     txt = instrucoes.montar({"ligacao": {"direcao": "feita"}, "lead": {"nome": "Leonardo"}})
     assert "religar" in txt and "Vou desligar e já te ligo de novo" in txt
+
+
+def test_abertura_do_retorno_combinado():
+    txt = instrucoes.abertura({"ligacao": {"direcao": "feita", "retorno": True}, "lead": {"nome": "Leonardo Daher"}})
+    assert "Como combinamos" in txt and "gravada" in txt and "Leonardo" in txt
+
+
+def test_roteiro_manda_a_martha_retornar():
+    txt = instrucoes.montar({"ligacao": {"direcao": "feita"}, "lead": {"nome": "Leonardo"}})
+    assert "agendar_retorno" in txt and "Quem liga de volta é" in txt
+    assert "pergunte se prefere que a consultora retorne mais tarde" not in txt
