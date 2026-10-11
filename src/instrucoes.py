@@ -7,7 +7,7 @@ import json
 import os
 from typing import Any
 
-VERSAO_ROTEIRO = "voz-v6 (roteiro v2 de 01/10/2026; agenda; testes de 03/10 até o 8º; nome Martha; endereço com andar)"
+VERSAO_ROTEIRO = "voz-v6 (roteiro v2 de 01/10/2026; agenda; testes de 03/10 até o 8º; nome Martha; endereço com andar; religar e abertura sem alô dobrado (11/10))"
 # decisão do Leonardo (03/10): a assistente se chama Martha, na voz e no robô de texto do mesmo número
 NOME = os.environ.get("VOZ_NOME_ASSISTENTE", "Martha")
 
@@ -106,6 +106,12 @@ OBJEÇÕES (respostas curtas, sempre voltando ao próximo passo)
 - "Não tenho tempo." → por isso a ideia é resolver em 20 minutos, por vídeo, no horário que ele escolher, inclusive à noite.
 - "Atendo em vários municípios." → uma empresa só resolve; o consultor vê os detalhes.
 - "Posso ser MEI?" → não, a atividade médica não é permitida no MEI.
+
+ÁUDIO RUIM OU PEDIDO PARA LIGAR DE NOVO (ferramenta religar)
+- Se o médico disser que a ligação está ruim, cortando, com ruído, eco ou voz estranha, ou pedir para desligar e ligar de
+  novo: diga numa frase curta "Vou desligar e já te ligo de novo, Doutor." e use religar. NÃO ofereça consultora nem outro
+  horário no lugar disso; só se a ferramenta disser que não dá para ligar de novo.
+- Se você não entender o que ele disse duas vezes seguidas por causa do áudio, pergunte se ele prefere que você ligue de novo.
 
 QUANDO CHAMAR UMA PESSOA (ferramenta chamar_humano)
 - O médico pede para falar com uma pessoa; objeção forte ou irritação; pergunta fora do FAQ e do que está aqui; assunto de
@@ -260,6 +266,11 @@ def abertura(ctx: dict[str, Any]) -> str:
                      or (lead.get("fase") not in (None, "novo")))
     base = ("Atenda agora, em português: cumprimente conforme o horário ('bom dia', 'boa tarde' ou 'boa noite'), "
             f"diga 'aqui é a {NOME}, assistente virtual da Conta Medical' (com o L final bem pronunciado) e avise que a ligação é gravada para a qualidade do atendimento")
+    if (ctx.get("ligacao") or {}).get("religada"):
+        # v0.4.2: a ligação anterior caiu por áudio ruim e a Martha está ligando de novo
+        return ("Abra a ligação: diga 'Pronto, Doutor, liguei de novo. Está me ouvindo bem agora?', lembre numa frase curta "
+                "que a ligação é gravada para a qualidade do atendimento, espere a resposta e retome a conversa de onde parou, "
+                "sem repetir a apresentação da Conta Medical.")
     if (ctx.get("ligacao") or {}).get("direcao") != "recebida":
         return (f"Abra a ligação: cumprimente, diga que é a {NOME}, assistente virtual da Conta Medical, avise que a ligação é gravada para a "
                 "qualidade do atendimento" + (f", confirme se fala com o(a) Doutor(a) {primeiro}" if primeiro else "")

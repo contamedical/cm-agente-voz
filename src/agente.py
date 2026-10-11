@@ -36,7 +36,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.4.1"
+VERSAO = "0.4.2"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -45,7 +45,7 @@ MAX_MIN = float(os.environ.get("VOZ_MAX_MIN", "15"))
 # v0.4.0: ligação feita pela Martha — quanto tempo esperar o médico atender (o celular toca ~45 s; wa-voz VOZ_TOQUE_S)
 ESPERA_ATENDER_S = float(os.environ.get("VOZ_ESPERA_ATENDER_S", "55"))
 # v0.4.1: depois de atender, quanto tempo dar ao "alô" do médico antes de a Martha começar
-ESPERA_ALO_S = float(os.environ.get("VOZ_ESPERA_ALO_S", "2.5"))
+ESPERA_ALO_S = float(os.environ.get("VOZ_ESPERA_ALO_S", "1.8"))
 # preço de referência do Gemini Live (US$/min de áudio) para a estimativa de custo gravada na ligação
 PRECO_ENTRADA_MIN = float(os.environ.get("VOZ_PRECO_ENTRADA_USD_MIN", "0.005"))
 PRECO_SAIDA_MIN = float(os.environ.get("VOZ_PRECO_SAIDA_USD_MIN", "0.018"))
@@ -254,6 +254,25 @@ class Assistente(Agent):
                 f"resultado ('retornar' ou 'sem_interesse').")
 
     @function_tool
+    async def religar(self, context: RunContext, motivo: str) -> str:
+        """Desliga e liga de novo para o médico em instantes. Use quando o áudio estiver ruim (ruído, cortes, eco, voz
+        robótica, um não entende o outro) ou quando o médico pedir para desligar e ligar de novo. ANTES de usar, diga numa
+        frase curta: "Vou desligar e já te ligo de novo, Doutor." Não ofereça consultora nem outro horário no lugar disso.
+
+        Args:
+            motivo: o problema, nas palavras do médico (ex.: "ligação muito ruim, com ruído").
+        """
+        r = await banco.rpc("ligacao_religar_pedir", {"p_ligacao_id": self.est.ligacao_id, "p_motivo": motivo}) or {}
+        if not r.get("ok"):
+            return (f"Não dá para ligar de novo agora ({r.get('motivo') or 'sem permissão'}). Peça desculpas pelo áudio, "
+                    "ofereça que a consultora fale com ele pelo WhatsApp, registre 'retornar' e encerre.")
+        self.est.registrado = True   # a ligação já fica registrada como "retornar" (não vira "caiu")
+        self.est.religar = True
+        log.info("religar %s: %s", self.est.ligacao_id, motivo)
+        asyncio.create_task(desligar(self.est, "religar: " + motivo))
+        raise StopResponse()
+
+    @function_tool
     async def encerrar_ligacao(self, context: RunContext) -> str:
         """Desliga a ligação. Use logo depois de se despedir (o resultado já deve ter sido registrado)."""
         self.est.encerrar_pedido = True
@@ -365,58 +384,26 @@ def instruir(session: AgentSession, texto: str):
 
 
 async def esperar_atender(est: "Estado", session: Any) -> bool:
-    """v0.4.0: ligação feita pela Martha. Espera o médico atender: status ACCEPTED da Meta (crm.ligacao_estado) ou a voz
-    dele. Devolve False se a ligação acabar (recusada, não atendida) ou passar ESPERA_ATENDER_S."""
-    falou = asyncio.Event()
-    parou = asyncio.Event()
-
-    def ao_falar(ev: Any) -> None:
-        st = getattr(ev, "new_state", "")
-        if st == "speaking":
-            falou.set()
-            parou.clear()
-        elif falou.is_set():
-            parou.set()
-
-    async def vez_do_alo(dar_tempo: bool) -> None:
-        # v0.4.1: o médico atendeu; se ainda não falou, dá ESPERA_ALO_S para o "alô"; se falou, espera ele terminar
-        if dar_tempo and not falou.is_set():
-            try:
-                await asyncio.wait_for(falou.wait(), timeout=ESPERA_ALO_S)
-            except asyncio.TimeoutError:
-                return
-        try:
-            await asyncio.wait_for(parou.wait(), timeout=4.0)
-        except asyncio.TimeoutError:
-            pass
-        await asyncio.sleep(0.4)
-
-    session.on("user_state_changed", ao_falar)
+    """v0.4.2: ligação feita pela Martha. Com a entrada de áudio desligada (o modelo não ouve o toque nem o "alô"), espera
+    a Meta avisar que o médico atendeu (status ACCEPTED → crm.ligacao_estado) e dá ESPERA_ALO_S, contados do atendimento,
+    para o "alô" passar. Devolve False se a ligação acabar (recusada, não atendida) ou passar ESPERA_ATENDER_S."""
     fim = time.monotonic() + ESPERA_ATENDER_S
-    try:
-        while time.monotonic() < fim:
-            if falou.is_set():
-                await vez_do_alo(False)   # deixa o "alô" terminar
-                return True
-            try:
-                e = await banco.rpc("ligacao_estado", {"p_ligacao_id": est.ligacao_id}) or {}
-                if e.get("encerrada"):
-                    return False
-                if e.get("atendida"):
-                    await vez_do_alo(True)
-                    return True
-            except Exception as x:  # noqa: BLE001
-                log.warning("ligacao_estado: %s", x)
-            try:
-                await asyncio.wait_for(falou.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                pass
-        return False
-    finally:
+    while time.monotonic() < fim:
         try:
-            session.off("user_state_changed", ao_falar)
-        except Exception:  # noqa: BLE001
-            pass
+            e = await banco.rpc("ligacao_estado", {"p_ligacao_id": est.ligacao_id}) or {}
+            if e.get("encerrada"):
+                return False
+            if e.get("atendida"):
+                try:
+                    passou = max(0.0, time.time() - float((e.get("ultimo_status") or {}).get("em") or time.time()))
+                except (TypeError, ValueError):
+                    passou = 0.0
+                await asyncio.sleep(max(0.0, ESPERA_ALO_S - passou))
+                return True
+        except Exception as x:  # noqa: BLE001
+            log.warning("ligacao_estado: %s", x)
+        await asyncio.sleep(0.5)
+    return False
 
 
 async def esperar_humano(est: Estado) -> None:
@@ -529,6 +516,8 @@ async def entrypoint(ctx: JobContext) -> None:
         log.error("job sem ligacao_id: %s", ctx.job.metadata)
         return
     contexto = await banco.rpc("ligacao_contexto", {"p_ligacao_id": ligacao_id}) or {}
+    if meta.get("religada"):   # v0.4.2: a Martha desligou por áudio ruim e está ligando de novo
+        contexto.setdefault("ligacao", {})["religada"] = True
     est = Estado(ligacao_id, ctx, contexto)
     await ctx.connect()
 
@@ -594,7 +583,12 @@ async def entrypoint(ctx: JobContext) -> None:
     saida = (contexto.get("ligacao") or {}).get("direcao") == "feita"
     est.atendida = True
     if saida:
-        # v0.4.0: o celular do médico ainda está tocando; a Martha só fala depois que ele atende
+        # v0.4.0: o celular do médico ainda está tocando; a Martha só fala depois que ele atende.
+        # v0.4.2: com a entrada de áudio desligada até lá — senão o modelo responde sozinho ao "alô" e a abertura sai dobrada
+        try:
+            session.input.set_audio_enabled(False)
+        except Exception as x:  # noqa: BLE001
+            log.warning("não deu para desligar a entrada de áudio: %s", x)
         est.atendida = await esperar_atender(est, session)
         if not est.atendida:
             log.info("ligação feita sem atender %s", ligacao_id)
@@ -602,9 +596,9 @@ async def entrypoint(ctx: JobContext) -> None:
             ctx.shutdown("médico não atendeu")
             return
         try:
-            session.interrupt()   # se o modelo começou a responder ao "alô", a abertura vem no lugar
-        except Exception:  # noqa: BLE001
-            pass
+            session.input.set_audio_enabled(True)
+        except Exception as x:  # noqa: BLE001
+            log.warning("não deu para religar a entrada de áudio: %s", x)
     await banco.atualizar_ligacao(ligacao_id, {"status": "em_andamento", "atendida_em": agora_iso()})
     # v0.3.4: a gravação começa junto com a abertura (no 4º teste o cumprimento e o aviso ficaram fora do áudio)
     gravacao = asyncio.create_task(iniciar_gravacao(est))

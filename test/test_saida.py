@@ -1,4 +1,4 @@
-"""v0.4.0 — ligação feita pela Martha: só fala depois que o médico atende."""
+"""v0.4.2 — ligação feita pela Martha: só abre depois que o médico atende e o "alô" passa; ligação refeita."""
 import asyncio
 import os
 import sys
@@ -8,61 +8,42 @@ import types
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-os.environ.setdefault("VOZ_ESPERA_ATENDER_S", "3")
 import agente  # noqa: E402
-
-
-class SessaoFalsa:
-    def __init__(self):
-        self.cb = {}
-
-    def on(self, nome, f):
-        self.cb.setdefault(nome, []).append(f)
-
-    def off(self, nome, f):
-        self.cb.get(nome, []).remove(f)
-
-    def emitir(self, nome, ev):
-        for f in list(self.cb.get(nome, [])):
-            f(ev)
+import instrucoes  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _rapido(monkeypatch):
-    monkeypatch.setattr(agente, "ESPERA_ALO_S", 0.3)
+    monkeypatch.setattr(agente, "ESPERA_ALO_S", 0.6)
+    monkeypatch.setattr(agente, "ESPERA_ATENDER_S", 3.0)
 
 
 def _est():
     return types.SimpleNamespace(ligacao_id="L1")
 
 
-def test_atende_pelo_status(monkeypatch):
-    estados = iter([{"atendida": False}, {"atendida": True}])
+def test_atende_e_espera_o_alo(monkeypatch):
+    n = {"c": 0}
 
     async def rpc(nome, args):
         assert nome == "ligacao_estado" and args == {"p_ligacao_id": "L1"}
-        return next(estados)
+        n["c"] += 1   # 2ª consulta: acabou de atender
+        return {"atendida": False} if n["c"] == 1 else {"atendida": True, "ultimo_status": {"status": "ACCEPTED", "em": str(time.time())}}
 
     monkeypatch.setattr(agente.banco, "rpc", rpc)
-    s = SessaoFalsa()
-    assert asyncio.run(agente.esperar_atender(_est(), s)) is True
-    assert s.cb["user_state_changed"] == []
+    t0 = time.monotonic()
+    assert asyncio.run(agente.esperar_atender(_est(), None)) is True
+    assert time.monotonic() - t0 >= 0.9   # 0,5 s da primeira consulta + ~0,6 s do alô
 
 
-def test_atende_pela_voz(monkeypatch):
+def test_atendimento_antigo_nao_espera_de_novo(monkeypatch):
     async def rpc(nome, args):
-        return {"atendida": False}
+        return {"atendida": True, "ultimo_status": {"status": "ACCEPTED", "em": str(time.time() - 5)}}
 
     monkeypatch.setattr(agente.banco, "rpc", rpc)
-    s = SessaoFalsa()
-
-    async def roda():
-        t = asyncio.create_task(agente.esperar_atender(_est(), s))
-        await asyncio.sleep(0.2)
-        s.emitir("user_state_changed", types.SimpleNamespace(new_state="speaking"))
-        return await t
-
-    assert asyncio.run(roda()) is True
+    t0 = time.monotonic()
+    assert asyncio.run(agente.esperar_atender(_est(), None)) is True
+    assert time.monotonic() - t0 < 0.3
 
 
 def test_nao_atendeu(monkeypatch):
@@ -70,7 +51,7 @@ def test_nao_atendeu(monkeypatch):
         return {"atendida": False, "encerrada": True}
 
     monkeypatch.setattr(agente.banco, "rpc", rpc)
-    assert asyncio.run(agente.esperar_atender(_est(), SessaoFalsa())) is False
+    assert asyncio.run(agente.esperar_atender(_est(), None)) is False
 
 
 def test_tempo_esgotado(monkeypatch):
@@ -78,29 +59,15 @@ def test_tempo_esgotado(monkeypatch):
         return {"atendida": False}
 
     monkeypatch.setattr(agente.banco, "rpc", rpc)
-    monkeypatch.setattr(agente, "ESPERA_ATENDER_S", 1.5)
-    assert asyncio.run(agente.esperar_atender(_est(), SessaoFalsa())) is False
+    monkeypatch.setattr(agente, "ESPERA_ATENDER_S", 1.2)
+    assert asyncio.run(agente.esperar_atender(_est(), None)) is False
 
 
-def test_espera_o_alo_terminar(monkeypatch):
-    """v0.4.1: atendeu (ACCEPTED) e disse "alô": a Martha só começa depois que ele para de falar."""
-    async def rpc(nome, args):
-        return {"atendida": True}
+def test_abertura_da_ligacao_refeita():
+    txt = instrucoes.abertura({"ligacao": {"direcao": "feita", "religada": True}, "lead": {"nome": "Leonardo Daher"}})
+    assert "liguei de novo" in txt and "gravada" in txt
 
-    monkeypatch.setattr(agente.banco, "rpc", rpc)
-    monkeypatch.setattr(agente, "ESPERA_ALO_S", 2.0)
-    s = SessaoFalsa()
 
-    async def roda():
-        t0 = time.monotonic()
-        t = asyncio.create_task(agente.esperar_atender(_est(), s))
-        await asyncio.sleep(0.2)
-        s.emitir("user_state_changed", types.SimpleNamespace(new_state="speaking"))
-        await asyncio.sleep(0.8)
-        assert not t.done()   # ainda falando: não pode começar
-        s.emitir("user_state_changed", types.SimpleNamespace(new_state="listening"))
-        ok = await t
-        return ok, time.monotonic() - t0
-
-    ok, dt = asyncio.run(roda())
-    assert ok is True and dt >= 1.3
+def test_roteiro_manda_religar_e_nao_consultora():
+    txt = instrucoes.montar({"ligacao": {"direcao": "feita"}, "lead": {"nome": "Leonardo"}})
+    assert "religar" in txt and "Vou desligar e já te ligo de novo" in txt
