@@ -36,12 +36,14 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.3.9"
+VERSAO = "0.4.0"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
 ESPERA_HUMANO_S = int(os.environ.get("VOZ_ESPERA_HUMANO_S", "45"))
 MAX_MIN = float(os.environ.get("VOZ_MAX_MIN", "15"))
+# v0.4.0: ligação feita pela Martha — quanto tempo esperar o médico atender (o celular toca ~45 s; wa-voz VOZ_TOQUE_S)
+ESPERA_ATENDER_S = float(os.environ.get("VOZ_ESPERA_ATENDER_S", "55"))
 # preço de referência do Gemini Live (US$/min de áudio) para a estimativa de custo gravada na ligação
 PRECO_ENTRADA_MIN = float(os.environ.get("VOZ_PRECO_ENTRADA_USD_MIN", "0.005"))
 PRECO_SAIDA_MIN = float(os.environ.get("VOZ_PRECO_SAIDA_USD_MIN", "0.018"))
@@ -360,6 +362,43 @@ def instruir(session: AgentSession, texto: str):
     return session.generate_reply(user_input=f"{AVISO} (aviso interno da plataforma, não é fala do médico; não leia nem mencione) {texto}")
 
 
+async def esperar_atender(est: "Estado", session: Any) -> bool:
+    """v0.4.0: ligação feita pela Martha. Espera o médico atender: status ACCEPTED da Meta (crm.ligacao_estado) ou a voz
+    dele. Devolve False se a ligação acabar (recusada, não atendida) ou passar ESPERA_ATENDER_S."""
+    falou = asyncio.Event()
+
+    def ao_falar(ev: Any) -> None:
+        if getattr(ev, "new_state", "") == "speaking":
+            falou.set()
+
+    session.on("user_state_changed", ao_falar)
+    fim = time.monotonic() + ESPERA_ATENDER_S
+    try:
+        while time.monotonic() < fim:
+            if falou.is_set():
+                await asyncio.sleep(0.8)   # deixa o "alô" terminar
+                return True
+            try:
+                e = await banco.rpc("ligacao_estado", {"p_ligacao_id": est.ligacao_id}) or {}
+                if e.get("encerrada"):
+                    return False
+                if e.get("atendida"):
+                    await asyncio.sleep(0.6)
+                    return True
+            except Exception as x:  # noqa: BLE001
+                log.warning("ligacao_estado: %s", x)
+            try:
+                await asyncio.wait_for(falou.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+        return False
+    finally:
+        try:
+            session.off("user_state_changed", ao_falar)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def esperar_humano(est: Estado) -> None:
     try:
         await asyncio.wait_for(est.humano_entrou.wait(), timeout=ESPERA_HUMANO_S)
@@ -513,7 +552,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 "p_meta": {"versao": VERSAO, "roteiro": instrucoes.VERSAO_ROTEIRO, "modelo": MODELO, "voz": VOZ,
                            "minutos_agente": round(dur_min, 2), "uso": uso, "saida": motivo, "ferramentas": est.ferramentas[-40:],
                            "custo": "estimado pelo tempo do agente na ligação"}})
-            if not est.registrado and not est.humano_nome:
+            if not est.registrado and not est.humano_nome and getattr(est, "atendida", True):   # v0.4.0: não atendeu ≠ caiu
                 await banco.rpc("ligacao_registrar", {
                     "p_ligacao_id": ligacao_id, "p_resultado": "caiu",
                     "p_resumo": "Ligação terminou sem o agente registrar resultado (o médico desligou antes ou a ligação caiu)."})
@@ -532,6 +571,20 @@ async def entrypoint(ctx: JobContext) -> None:
             audio_input=room_io.AudioInputOptions(noise_cancellation=noise_cancellation.BVCTelephony())
             if noise_cancellation and os.environ.get("VOZ_FILTRO_RUIDO", "1") == "1" else True),
     )
+    saida = (contexto.get("ligacao") or {}).get("direcao") == "feita"
+    est.atendida = True
+    if saida:
+        # v0.4.0: o celular do médico ainda está tocando; a Martha só fala depois que ele atende
+        est.atendida = await esperar_atender(est, session)
+        if not est.atendida:
+            log.info("ligação feita sem atender %s", ligacao_id)
+            est.encerrando = True
+            ctx.shutdown("médico não atendeu")
+            return
+        try:
+            session.interrupt()   # se o modelo começou a responder ao "alô", a abertura vem no lugar
+        except Exception:  # noqa: BLE001
+            pass
     await banco.atualizar_ligacao(ligacao_id, {"status": "em_andamento", "atendida_em": agora_iso()})
     # v0.3.4: a gravação começa junto com a abertura (no 4º teste o cumprimento e o aviso ficaram fora do áudio)
     gravacao = asyncio.create_task(iniciar_gravacao(est))
