@@ -8,7 +8,7 @@
 # Não precisa de porta aberta: o agente só faz conexões de saída (LiveKit Cloud, Gemini e Supabase).
 services:
   agente:
-    image: ghcr.io/leonardodahergenpar/cm-agente-voz:latest
+    image: ghcr.io/contamedical/cm-agente-voz:latest
     container_name: cm-agente-voz
     restart: unless-stopped
     environment:

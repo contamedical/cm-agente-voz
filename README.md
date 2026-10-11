@@ -27,7 +27,7 @@ O áudio só é gravado com as variáveis `S3_*` preenchidas. Ele vai para o buc
 
 ## Publicar
 
-Push na `main` → GitHub Actions (roda os testes) → `ghcr.io/leonardodahergenpar/cm-agente-voz:latest` → Hostinger
+Push na `main` → GitHub Actions (roda os testes) → `ghcr.io/contamedical/cm-agente-voz:latest` → Hostinger
 Docker Manager, projeto `cm-agente-voz` (YAML em `docker-compose.yml`, com os campos `COLE_AQUI` preenchidos lá).
 
 ## Testes

@@ -36,7 +36,7 @@ except Exception:  # noqa: BLE001
 import banco
 import instrucoes
 
-VERSAO = "0.4.0"
+VERSAO = "0.4.1"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -44,6 +44,8 @@ ESPERA_HUMANO_S = int(os.environ.get("VOZ_ESPERA_HUMANO_S", "45"))
 MAX_MIN = float(os.environ.get("VOZ_MAX_MIN", "15"))
 # v0.4.0: ligação feita pela Martha — quanto tempo esperar o médico atender (o celular toca ~45 s; wa-voz VOZ_TOQUE_S)
 ESPERA_ATENDER_S = float(os.environ.get("VOZ_ESPERA_ATENDER_S", "55"))
+# v0.4.1: depois de atender, quanto tempo dar ao "alô" do médico antes de a Martha começar
+ESPERA_ALO_S = float(os.environ.get("VOZ_ESPERA_ALO_S", "2.5"))
 # preço de referência do Gemini Live (US$/min de áudio) para a estimativa de custo gravada na ligação
 PRECO_ENTRADA_MIN = float(os.environ.get("VOZ_PRECO_ENTRADA_USD_MIN", "0.005"))
 PRECO_SAIDA_MIN = float(os.environ.get("VOZ_PRECO_SAIDA_USD_MIN", "0.018"))
@@ -366,24 +368,42 @@ async def esperar_atender(est: "Estado", session: Any) -> bool:
     """v0.4.0: ligação feita pela Martha. Espera o médico atender: status ACCEPTED da Meta (crm.ligacao_estado) ou a voz
     dele. Devolve False se a ligação acabar (recusada, não atendida) ou passar ESPERA_ATENDER_S."""
     falou = asyncio.Event()
+    parou = asyncio.Event()
 
     def ao_falar(ev: Any) -> None:
-        if getattr(ev, "new_state", "") == "speaking":
+        st = getattr(ev, "new_state", "")
+        if st == "speaking":
             falou.set()
+            parou.clear()
+        elif falou.is_set():
+            parou.set()
+
+    async def vez_do_alo(dar_tempo: bool) -> None:
+        # v0.4.1: o médico atendeu; se ainda não falou, dá ESPERA_ALO_S para o "alô"; se falou, espera ele terminar
+        if dar_tempo and not falou.is_set():
+            try:
+                await asyncio.wait_for(falou.wait(), timeout=ESPERA_ALO_S)
+            except asyncio.TimeoutError:
+                return
+        try:
+            await asyncio.wait_for(parou.wait(), timeout=4.0)
+        except asyncio.TimeoutError:
+            pass
+        await asyncio.sleep(0.4)
 
     session.on("user_state_changed", ao_falar)
     fim = time.monotonic() + ESPERA_ATENDER_S
     try:
         while time.monotonic() < fim:
             if falou.is_set():
-                await asyncio.sleep(0.8)   # deixa o "alô" terminar
+                await vez_do_alo(False)   # deixa o "alô" terminar
                 return True
             try:
                 e = await banco.rpc("ligacao_estado", {"p_ligacao_id": est.ligacao_id}) or {}
                 if e.get("encerrada"):
                     return False
                 if e.get("atendida"):
-                    await asyncio.sleep(0.6)
+                    await vez_do_alo(True)
                     return True
             except Exception as x:  # noqa: BLE001
                 log.warning("ligacao_estado: %s", x)

@@ -2,7 +2,10 @@
 import asyncio
 import os
 import sys
+import time
 import types
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("VOZ_ESPERA_ATENDER_S", "3")
@@ -22,6 +25,11 @@ class SessaoFalsa:
     def emitir(self, nome, ev):
         for f in list(self.cb.get(nome, [])):
             f(ev)
+
+
+@pytest.fixture(autouse=True)
+def _rapido(monkeypatch):
+    monkeypatch.setattr(agente, "ESPERA_ALO_S", 0.3)
 
 
 def _est():
@@ -72,3 +80,27 @@ def test_tempo_esgotado(monkeypatch):
     monkeypatch.setattr(agente.banco, "rpc", rpc)
     monkeypatch.setattr(agente, "ESPERA_ATENDER_S", 1.5)
     assert asyncio.run(agente.esperar_atender(_est(), SessaoFalsa())) is False
+
+
+def test_espera_o_alo_terminar(monkeypatch):
+    """v0.4.1: atendeu (ACCEPTED) e disse "alô": a Martha só começa depois que ele para de falar."""
+    async def rpc(nome, args):
+        return {"atendida": True}
+
+    monkeypatch.setattr(agente.banco, "rpc", rpc)
+    monkeypatch.setattr(agente, "ESPERA_ALO_S", 2.0)
+    s = SessaoFalsa()
+
+    async def roda():
+        t0 = time.monotonic()
+        t = asyncio.create_task(agente.esperar_atender(_est(), s))
+        await asyncio.sleep(0.2)
+        s.emitir("user_state_changed", types.SimpleNamespace(new_state="speaking"))
+        await asyncio.sleep(0.8)
+        assert not t.done()   # ainda falando: não pode começar
+        s.emitir("user_state_changed", types.SimpleNamespace(new_state="listening"))
+        ok = await t
+        return ok, time.monotonic() - t0
+
+    ok, dt = asyncio.run(roda())
+    assert ok is True and dt >= 1.3
