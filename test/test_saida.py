@@ -33,7 +33,7 @@ def test_atende_e_espera_o_alo(monkeypatch):
     monkeypatch.setattr(agente.banco, "rpc", rpc)
     t0 = time.monotonic()
     assert asyncio.run(agente.esperar_atender(_est(), None)) is True
-    assert time.monotonic() - t0 >= 0.9   # 0,5 s da primeira consulta + ~0,6 s do alô
+    assert time.monotonic() - t0 >= 0.8   # 0,25 s da primeira consulta + ~0,6 s do alô (v0.6.0: consulta a cada 0,25 s)
 
 
 def test_atendimento_antigo_nao_espera_de_novo(monkeypatch):

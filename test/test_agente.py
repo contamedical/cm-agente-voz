@@ -153,7 +153,8 @@ def test_ferramentas_de_agenda(monkeypatch):
         r = await ag.horarios_livres(None, "video", sem_preferencia=True)
         assert "TRÊS opções" in r and chamadas[-1][1]["p_qtd"] == 40
         r = await ag.marcar_reuniao(None, "video", "2026-10-08T20:30:00+00:00")
-        assert "Fechado: quinta-feira, 8 de outubro, às 17h30, por vídeo, com a Priscila" in r and "UMA vez" in r and est.marcado
+        assert "Fechado! Quinta-feira... 8 de outubro... às cinco e meia da tarde... por vídeo, com a Priscila." in r and "UMA vez" in r and est.marcado
+        assert "Ficou alguma dúvida?" in r and "ESPERE" in r
         assert "mudou" not in r
         assert chamadas[-1][1]["p_lead"] == "LD" and chamadas[-1][1]["p_ligacao_id"] == "L1"
         est2 = agente.Estado("L2", FakeCtx(), {**ctx, "lead": None})
@@ -203,8 +204,8 @@ def test_reuniao_ja_marcada_remarcar_e_cancelar(monkeypatch):
 def test_confirmacao_e_espalhar():
     r = {"texto": "quarta-feira, 7 de outubro, às 17h30", "consultora": "Emilly", "endereco": "Ed. Quadra Corporate, 17º andar, na Doca"}
     f = agente.frase_confirmacao(r, "cafe")
-    assert f == ("Fechado: quarta-feira, 7 de outubro, às 17h30, aqui no nosso escritório, no edifício Quadra Corporate, "
-                 "décimo sétimo andar, na Doca, com a Emilly.")
+    assert f == ("Fechado! Quarta-feira... 7 de outubro... às cinco e meia da tarde... aqui no nosso escritório: edifício Quadra "
+                 "Corporate... décimo sétimo andar... na Doca... com a Emilly.")
     assert agente.endereco_falado("Ed. Torre X, 3° andar") == "edifício Torre X, terceiro andar"
     assert agente.endereco_falado("sala 1203, 12º andar") == "sala 1203, décimo segundo andar"
     assert agente.endereco_falado("Quadra Corporate, na Doca") == "Quadra Corporate, na Doca"

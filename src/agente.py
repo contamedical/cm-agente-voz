@@ -33,10 +33,11 @@ try:  # supressão de ruído da LiveKit Cloud (modelo para áudio de telefone); 
 except Exception:  # noqa: BLE001
     noise_cancellation = None
 
+import alo
 import banco
 import instrucoes
 
-VERSAO = "0.5.0"
+VERSAO = "0.6.0"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -46,6 +47,14 @@ MAX_MIN = float(os.environ.get("VOZ_MAX_MIN", "15"))
 ESPERA_ATENDER_S = float(os.environ.get("VOZ_ESPERA_ATENDER_S", "55"))
 # v0.4.1: depois de atender, quanto tempo dar ao "alô" do médico antes de a Martha começar
 ESPERA_ALO_S = float(os.environ.get("VOZ_ESPERA_ALO_S", "1.8"))
+# v0.6.0: o fim do "alô" do médico dispara a abertura (o ACCEPTED da Meta chega ao banco segundos depois)
+DETECTA_ALO = os.environ.get("VOZ_DETECTA_ALO", "1") == "1"
+ALO_LIMIAR_DB = float(os.environ.get("VOZ_ALO_LIMIAR_DB", "-42"))
+ALO_FIM_MS = float(os.environ.get("VOZ_ALO_FIM_MS", "350"))
+ALO_MAX_S = float(os.environ.get("VOZ_ALO_MAX_S", "2.5"))            # fala longa: começa mesmo assim
+ATENDEU_SEM_ALO_S = float(os.environ.get("VOZ_ATENDEU_SEM_ALO_S", "0.8"))   # atendeu calado: começa depois disso
+# v0.6.0: depois da despedida, escuta a linha antes de desligar; se o médico falar, não desliga
+JANELA_FIM_S = float(os.environ.get("VOZ_JANELA_FIM_S", "2.5"))
 # preço de referência do Gemini Live (US$/min de áudio) para a estimativa de custo gravada na ligação
 PRECO_ENTRADA_MIN = float(os.environ.get("VOZ_PRECO_ENTRADA_USD_MIN", "0.005"))
 PRECO_SAIDA_MIN = float(os.environ.get("VOZ_PRECO_SAIDA_USD_MIN", "0.018"))
@@ -233,8 +242,11 @@ class Assistente(Agent):
         antes = ((self.est.contexto.get("compromissos") or [{}])[0] or {}).get("consultora")
         troca = (f" A consultora mudou (antes era a {antes}): diga só 'quem vai te receber é a {r['consultora']}', sem explicar a troca."
                  if antes and antes != r.get("consultora") else "")
-        return (f"Marcado. Confirme UMA vez só, numa frase, exatamente assim: '{frase_confirmacao(r, modalidade)}'.{troca} Não repita "
-                "a confirmação depois. Em seguida use registrar_resultado (agendou), despeça-se numa frase curta e use encerrar_ligacao.")
+        # v0.6.0 (1º retorno, 13/10): ele pediu para repetir o endereço e ela já tinha desligado
+        return (f"Marcado. Confirme UMA vez só, devagar e com pausas, exatamente assim: '{frase_confirmacao(r, modalidade)}'.{troca} "
+                "Logo em seguida diga: 'Assim que a gente desligar, te mando tudo por escrito aqui no WhatsApp. Ficou alguma dúvida? "
+                "Quer que eu repita algum detalhe?' e ESPERE a resposta. Se ele pedir para repetir, repita devagar, por partes. Só "
+                "depois que ele disser que está tudo certo: registrar_resultado (agendou), despedida curta e encerrar_ligacao.")
 
     @function_tool
     async def cancelar_reuniao(self, context: RunContext, motivo: str) -> str:
@@ -314,7 +326,7 @@ class Assistente(Agent):
         if not self.est.registrado:
             self.est.encerrar_pedido = False
             return "Antes de encerrar, use registrar_resultado."
-        asyncio.create_task(desligar(self.est, "agente encerrou"))
+        asyncio.create_task(desligar(self.est, "agente encerrou", ouvir_antes=True))
         # v0.3.6 (6º teste): o texto de retorno fazia o modelo falar de novo depois da despedida — e em inglês
         # ("I have successfully rescheduled the meeting…"). StopResponse = a ferramenta não pede resposta.
         raise StopResponse()
@@ -348,16 +360,43 @@ def endereco_falado(endereco: str) -> str:
     return re.sub(r"\b(\d{1,2})\s?[º°]", ordinal, t)
 
 
+_HORAS = ["meia-noite", "uma", "duas", "três", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "meio-dia"]
+_MIN = {"00": "", "10": " e dez", "15": " e quinze", "20": " e vinte", "30": " e meia", "40": " e quarenta",
+        "45": " e quarenta e cinco", "50": " e cinquenta"}
+
+
+def hora_falada(texto: str) -> str:
+    """v0.6.0: "às 15h" → "às três da tarde"; "às 17h30" → "às cinco e meia da tarde"; "às 12h" → "ao meio-dia"
+    (na confirmação do 1º retorno, a leitura de data e hora soou rápida e robótica)."""
+    def falar(m: re.Match[str]) -> str:
+        h, mm = int(m.group(1)), m.group(2) or "00"
+        if not 0 <= h <= 23 or (mm not in _MIN and not mm.isdigit()):
+            return m.group(0)
+        resto = _MIN.get(mm, f" e {int(mm)}")
+        if h == 12:
+            return f"ao meio-dia{resto}"
+        h12 = h if h <= 12 else h - 12
+        periodo = "da manhã" if h < 12 else ("da tarde" if h <= 18 else "da noite")
+        art = "à" if h12 == 1 else "às"
+        return f"{art} {_HORAS[h12]}{resto} {periodo}"
+    return re.sub(r"\b[àa]s (\d{1,2})h(\d{2})?\b", falar, texto)
+
+
 def frase_confirmacao(r: dict[str, Any], modalidade: str) -> str:
     """Frase única de confirmação. v0.3.5: "café" aparece só ao oferecer; marcado, vira reunião aqui no escritório
-    (no 5º teste ela repetiu "café no escritório" três vezes e disse "por café no escritório")."""
-    texto, quem = r.get("texto", ""), r.get("consultora", "a consultora")
+    (no 5º teste ela repetiu "café no escritório" três vezes e disse "por café no escritório").
+    v0.6.0: em partes curtas, com pausas ("..."), e a hora como se fala."""
+    texto, quem = hora_falada(r.get("texto", "")), r.get("consultora", "a consultora")
+    partes = [p.strip() for p in texto.split(",") if p.strip()]
+    data = "... ".join(partes) if partes else texto
+    data = data[:1].upper() + data[1:]
     if modalidade == "cafe":
         local = endereco_falado(r.get("endereco") or "Ed. Quadra Corporate, 17º andar, na Doca")
-        return f"Fechado: {texto}, aqui no nosso escritório, no {local}, com a {quem}."
+        local = "... ".join(p.strip() for p in local.split(",") if p.strip())
+        return f"Fechado! {data}... aqui no nosso escritório: {local}... com a {quem}."
     if modalidade == "video":
-        return f"Fechado: {texto}, por vídeo, com a {quem}. O link chega pelo WhatsApp."
-    return f"Fechado: {texto}, a {quem} liga para você."
+        return f"Fechado! {data}... por vídeo, com a {quem}."
+    return f"Fechado! {data}... a {quem} liga para você."
 
 
 def espalhar(opcoes: list[dict[str, Any]], n: int = 3) -> list[dict[str, Any]]:
@@ -410,27 +449,102 @@ def instruir(session: AgentSession, texto: str):
     return session.generate_reply(user_input=f"{AVISO} (aviso interno da plataforma, não é fala do médico; não leia nem mencione) {texto}")
 
 
-async def esperar_atender(est: "Estado", session: Any) -> bool:
-    """v0.4.2: ligação feita pela Martha. Com a entrada de áudio desligada (o modelo não ouve o toque nem o "alô"), espera
-    a Meta avisar que o médico atendeu (status ACCEPTED → crm.ligacao_estado) e dá ESPERA_ALO_S, contados do atendimento,
-    para o "alô" passar. Devolve False se a ligação acabar (recusada, não atendida) ou passar ESPERA_ATENDER_S."""
-    fim = time.monotonic() + ESPERA_ATENDER_S
-    while time.monotonic() < fim:
+async def faixa_do_medico(room: Any, medico: Any, timeout: float = 8.0) -> Any:
+    """A faixa de áudio do médico (participante do conector do WhatsApp), assim que estiver assinada."""
+    for pub in list((getattr(medico, "track_publications", None) or {}).values()):
+        if getattr(pub, "track", None) is not None and getattr(pub, "kind", None) == rtc.TrackKind.KIND_AUDIO:
+            return pub.track
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    def ao_assinar(track: Any, pub: Any, part: Any) -> None:
+        if getattr(part, "identity", None) == medico.identity and getattr(track, "kind", None) == rtc.TrackKind.KIND_AUDIO and not fut.done():
+            fut.set_result(track)
+
+    room.on("track_subscribed", ao_assinar)
+    try:
+        return await asyncio.wait_for(fut, timeout)
+    finally:
         try:
-            e = await banco.rpc("ligacao_estado", {"p_ligacao_id": est.ligacao_id}) or {}
-            if e.get("encerrada"):
-                return False
-            if e.get("atendida"):
+            room.off("track_subscribed", ao_assinar)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def ouvir_alo(room: Any, medico: Any, det: "alo.DetectorAlo") -> None:
+    """v0.6.0: alimenta o detector com o áudio do médico (cópia da faixa; o modelo continua sem ouvir até a abertura)."""
+    try:
+        faixa = await faixa_do_medico(room, medico)
+    except asyncio.TimeoutError:
+        log.warning("sem faixa de áudio do médico: o alô não será detectado (fica o ACCEPTED do banco)")
+        return
+    stream = rtc.AudioStream(faixa, sample_rate=16000, num_channels=1)
+    try:
+        async for ev in stream:
+            f = ev.frame
+            dur = 1000.0 * f.samples_per_channel / max(1, f.sample_rate)
+            if det.alimentar(alo.nivel_db(f.data), dur):
+                return
+    finally:
+        try:
+            await stream.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def esperar_atender(est: "Estado", session: Any, medico: Any = None) -> bool:
+    """Ligação feita pela Martha: espera o médico atender. Devolve False se a ligação acabar ou passar ESPERA_ATENDER_S.
+
+    v0.4.2: a entrada de áudio do MODELO fica desligada enquanto toca (senão ele responde sozinho ao "alô").
+    v0.6.0 (1º retorno, 13/10: ~7 s de silêncio): com o médico na sala, o agente escuta a linha e começa quando o "alô"
+    termina; o ACCEPTED do banco (que chega segundos depois) vira reserva: atendeu calado → começa ATENDEU_SEM_ALO_S
+    depois. Sem o médico (testes) ou com VOZ_DETECTA_ALO=0, vale a regra da v0.4.2 (ESPERA_ALO_S contados do atendimento)."""
+    t0 = time.monotonic()
+    fim = t0 + ESPERA_ATENDER_S
+    det = alo.DetectorAlo(limiar_db=ALO_LIMIAR_DB, fim_ms=ALO_FIM_MS) if (DETECTA_ALO and medico is not None) else None
+    ouvinte = asyncio.create_task(ouvir_alo(est.ctx.room, medico, det)) if det else None
+    aceito: float | None = None
+    atraso_meta = 0.0
+    prox_banco = 0.0
+    fonte = ""
+    try:
+        while time.monotonic() < fim:
+            if det and det.terminou:
+                fonte = "alo"
+                break
+            if det and det.ouviu and det.fala_total_ms >= ALO_MAX_S * 1000:
+                fonte = "alo_longo"
+                break
+            if time.monotonic() >= prox_banco:
+                prox_banco = time.monotonic() + 0.25
                 try:
-                    passou = max(0.0, time.time() - float((e.get("ultimo_status") or {}).get("em") or time.time()))
-                except (TypeError, ValueError):
-                    passou = 0.0
-                await asyncio.sleep(max(0.0, ESPERA_ALO_S - passou))
-                return True
-        except Exception as x:  # noqa: BLE001
-            log.warning("ligacao_estado: %s", x)
-        await asyncio.sleep(0.5)
-    return False
+                    e = await banco.rpc("ligacao_estado", {"p_ligacao_id": est.ligacao_id}) or {}
+                    if e.get("encerrada"):
+                        return False
+                    if e.get("atendida") and aceito is None:
+                        aceito = time.monotonic()
+                        try:
+                            atraso_meta = max(0.0, time.time() - float((e.get("ultimo_status") or {}).get("em") or time.time()))
+                        except (TypeError, ValueError):
+                            atraso_meta = 0.0
+                except Exception as x:  # noqa: BLE001
+                    log.warning("ligacao_estado: %s", x)
+            if aceito is not None:
+                if det is None:
+                    await asyncio.sleep(max(0.0, ESPERA_ALO_S - atraso_meta))
+                    fonte = "meta"
+                    break
+                if not det.ouviu and (time.monotonic() - aceito) + atraso_meta >= ATENDEU_SEM_ALO_S:
+                    fonte = "meta_sem_alo"
+                    break
+            await asyncio.sleep(0.05)
+        else:
+            return False
+    finally:
+        if ouvinte and not ouvinte.done():
+            ouvinte.cancel()
+    if hasattr(est, "anotar"):
+        est.anotar("atendeu", t0, f"{fonte}; ACCEPTED {'%.1f s depois do atendimento' % atraso_meta if aceito else 'ainda não chegou'}")
+    return True
 
 
 async def esperar_humano(est: Estado) -> None:
@@ -473,13 +587,33 @@ async def esperar_silencio(session: AgentSession | None, quieto_s: float = 1.5, 
         await asyncio.sleep(0.2)
 
 
-async def desligar(est: Estado, motivo: str) -> None:
+async def medico_falou(session: Any, janela_s: float) -> bool:
+    """v0.6.0: o médico começou a falar dentro da janela?"""
+    fim = time.monotonic() + janela_s
+    while time.monotonic() < fim:
+        if getattr(session, "user_state", "") == "speaking":
+            return True
+        await asyncio.sleep(0.1)
+    return False
+
+
+async def desligar(est: Estado, motivo: str, ouvir_antes: bool = False) -> None:
     if est.encerrando:
         return
     est.encerrando = True
+    t0 = time.monotonic()
     try:
         await esperar_silencio(est.session)
-        await asyncio.sleep(0.8)
+        if ouvir_antes and est.session is not None and JANELA_FIM_S > 0:
+            # v0.6.0 (1º retorno, 13/10): "pode repetir o endereço?" depois da despedida — a ligação já tinha caído
+            if await medico_falou(est.session, JANELA_FIM_S):
+                log.info("o médico falou depois da despedida; não desliga %s", est.ligacao_id)
+                est.anotar("desligar_cancelado", t0, "o médico falou depois da despedida")
+                est.encerrando = False
+                est.encerrar_pedido = False
+                return
+        else:
+            await asyncio.sleep(0.8)
     except Exception:  # noqa: BLE001
         pass
     log.info("encerrando %s: %s", est.ligacao_id, motivo)
@@ -618,7 +752,7 @@ async def entrypoint(ctx: JobContext) -> None:
             session.input.set_audio_enabled(False)
         except Exception as x:  # noqa: BLE001
             log.warning("não deu para desligar a entrada de áudio: %s", x)
-        est.atendida = await esperar_atender(est, session)
+        est.atendida = await esperar_atender(est, session, medico)
         if not est.atendida:
             log.info("ligação feita sem atender %s", ligacao_id)
             est.encerrando = True
