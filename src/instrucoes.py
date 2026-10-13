@@ -297,9 +297,22 @@ def abertura(ctx: dict[str, Any]) -> str:
                 "que a ligação é gravada para a qualidade do atendimento, espere a resposta e retome a conversa de onde parou, "
                 "sem repetir a apresentação da Conta Medical.")
     if (ctx.get("ligacao") or {}).get("direcao") != "recebida":
-        return (f"Abra a ligação: cumprimente, diga que é a {NOME}, assistente virtual da Conta Medical, avise que a ligação é gravada para a "
-                "qualidade do atendimento" + (f", confirme se fala com o(a) Doutor(a) {primeiro}" if primeiro else "")
-                + ", lembre que ele pediu esta ligação e pergunte se consegue falar dois minutinhos agora. PARE e espere a resposta.")
+        # v0.6.1 (2º teste da v0.6.0): com reunião marcada ou já conhecido, nada de apresentação nem triagem de novo
+        abre = (f"Abra a ligação: cumprimente, diga que é a {NOME}, assistente virtual da Conta Medical, avise que a ligação é gravada para a "
+                "qualidade do atendimento" + (f", confirme se fala com o(a) Doutor(a) {primeiro}" if primeiro else ""))
+        if comp:
+            c = comp[0]
+            mod, part = {"cafe": ("um café no escritório", "marcado"), "video": ("uma videochamada", "marcada"),
+                         "retorno": ("um retorno por ligação", "marcado")}.get(c.get("modalidade"), ("uma reunião", "marcada"))
+            return (abre + " e pergunte se consegue falar dois minutinhos agora. PARE e espere a resposta. Quando ele confirmar, diga "
+                    f"numa frase: 'Vi aqui que você tem {mod} {part} conosco para {c.get('texto')}, com a {c.get('consultora')}. "
+                    "Como posso te ajudar?'. NÃO faça a apresentação da Conta Medical nem as perguntas de triagem; se ele quiser "
+                    "outro horário, é remarcação (o horário antigo é liberado sozinho).")
+        if conhecido:
+            return (abre + " e pergunte se consegue falar dois minutinhos agora. PARE e espere a resposta. Ele já nos conhece: NÃO "
+                    "faça a apresentação da Conta Medical; retome o que ficou pendente nas mensagens e ligações anteriores e não "
+                    "pergunte o que a ficha já responde.")
+        return (abre + ", lembre que ele pediu esta ligação e pergunte se consegue falar dois minutinhos agora. PARE e espere a resposta.")
     if comp:
         c = comp[0]
         # v0.3.8 (8º teste): "um café … marcada" — concordância conforme a modalidade

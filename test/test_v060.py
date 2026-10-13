@@ -144,3 +144,13 @@ def test_roteiro_v060():
     assert "AGENDA VIGENTE" not in s2
     a = instrucoes.abertura({"ligacao": {"direcao": "feita", "retorno": True}, "lead": {"nome": "Leonardo Daher"}})
     assert "PARE e espere" in a
+
+
+def test_abertura_da_ligacao_feita_v061():
+    comp = [{"modalidade": "cafe", "texto": "quarta-feira, 14 de outubro, às 15h", "consultora": "Priscila"}]
+    a = instrucoes.abertura({"ligacao": {"direcao": "feita"}, "lead": {"nome": "Leonardo Daher", "fase": "proposta"}, "compromissos": comp})
+    assert "Vi aqui que você tem um café no escritório marcado" in a and "NÃO faça a apresentação" in a and "pediu esta ligação" not in a
+    b = instrucoes.abertura({"ligacao": {"direcao": "feita"}, "lead": {"nome": "Leonardo Daher", "fase": "proposta"}})
+    assert "já nos conhece" in b and "pediu esta ligação" not in b
+    c = instrucoes.abertura({"ligacao": {"direcao": "feita"}, "lead": {"nome": "Ana Souza", "fase": "novo"}})
+    assert "pediu esta ligação" in c and "PARE" in c
