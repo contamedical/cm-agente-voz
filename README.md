@@ -27,8 +27,32 @@ O áudio só é gravado com as variáveis `S3_*` preenchidas. Ele vai para o buc
 
 ## Publicar
 
-Push na `main` → GitHub Actions (roda os testes) → `ghcr.io/contamedical/cm-agente-voz:latest` → Hostinger
-Docker Manager, projeto `cm-agente-voz` (YAML em `docker-compose.yml`, com os campos `COLE_AQUI` preenchidos lá).
+Automático, pelo workflow `.github/workflows/pipeline.yml`:
+
+- **Pull request para a `main`**: só roda os testes.
+- **Push na `main`** (ou "Run workflow" manual): testes → build e push de `ghcr.io/contamedical/cm-agente-voz`
+  (tags `:latest` e `:<sha>`) → deploy por SSH na VPS Hostinger. Cada etapa só roda se a anterior passar.
+
+O deploy entra em `/docker/cm-agente-voz` (troque pela variável `DEPLOY_DIR` em Settings → Secrets and variables →
+Actions → Variables, se a pasta for outra), roda `docker compose pull agente` e `docker compose up -d agente`,
+espera 10 s, confere se o container `cm-agente-voz` está `running`, mostra os últimos 20 logs e roda
+`docker image prune -f`. Se a imagem não mudou, o log mostra `Running` (não recria); com código novo, `Recreated`.
+
+O YAML do servidor é o `docker-compose.yml` deste repositório, colado no Docker Manager (projeto `cm-agente-voz`)
+com os campos `COLE_AQUI` preenchidos **lá**, nunca aqui. O pacote no GHCR precisa ser **público**: a VPS baixa sem login.
+
+Secrets do repositório (Settings → Secrets and variables → Actions), os mesmos dos outros projetos da VPS:
+
+| Secret | Valor |
+|---|---|
+| `SSH_HOST` | IP da VPS |
+| `SSH_USER` | `root` |
+| `SSH_PRIVATE_KEY` | chave privada inteira (com as linhas `BEGIN`/`END` e as quebras de linha) |
+| `SSH_PORT` | só se não for 22 |
+
+O job `deploy` usa o environment `producao` (criado sozinho no primeiro uso; dá para exigir aprovação nele).
+Se só o deploy falhar, corrija e use "Re-run failed jobs". Erro `ssh: unable to authenticate ... [none publickey]`
+= a privada do secret não é par de nenhuma pública em `~/.ssh/authorized_keys` da VPS.
 
 ## Testes
 
