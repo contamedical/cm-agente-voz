@@ -37,7 +37,7 @@ import alo
 import banco
 import instrucoes
 
-VERSAO = "0.6.1"
+VERSAO = "0.6.2"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -666,6 +666,18 @@ def transcricao(session: AgentSession | None, humano: str | None) -> list[dict[s
     return turnos
 
 
+def marcar_contexto(contexto: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Junta ao contexto do banco o que veio no metadata do job (wa-voz)."""
+    if meta.get("religada"):   # v0.4.2: a Martha desligou por áudio ruim e está ligando de novo
+        contexto.setdefault("ligacao", {})["religada"] = True
+    # v0.5.0: retorno combinado com o médico numa ligação anterior.
+    # v0.6.2 (crm_18): a ligação automática (o médico acabou de permitir pelo WhatsApp, depois da triagem por texto) é
+    # discada pelo mesmo caminho do retorno e chega com retorno=true, mas é a PRIMEIRA ligação: nada de "como combinamos".
+    if meta.get("retorno") and not contexto.get("automatica"):
+        contexto.setdefault("ligacao", {})["retorno"] = True
+    return contexto
+
+
 server = AgentServer()
 
 
@@ -676,11 +688,7 @@ async def entrypoint(ctx: JobContext) -> None:
     if not ligacao_id:
         log.error("job sem ligacao_id: %s", ctx.job.metadata)
         return
-    contexto = await banco.rpc("ligacao_contexto", {"p_ligacao_id": ligacao_id}) or {}
-    if meta.get("religada"):   # v0.4.2: a Martha desligou por áudio ruim e está ligando de novo
-        contexto.setdefault("ligacao", {})["religada"] = True
-    if meta.get("retorno"):   # v0.5.0: retorno combinado com o médico numa ligação anterior
-        contexto.setdefault("ligacao", {})["retorno"] = True
+    contexto = marcar_contexto(await banco.rpc("ligacao_contexto", {"p_ligacao_id": ligacao_id}) or {}, meta)
     est = Estado(ligacao_id, ctx, contexto)
     await ctx.connect()
 

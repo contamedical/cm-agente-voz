@@ -7,7 +7,7 @@ import json
 import os
 from typing import Any
 
-VERSAO_ROTEIRO = "voz-v6 (roteiro v2 de 01/10/2026; agenda; testes de 03/10 até o 8º; nome Martha; endereço com andar; religar e abertura sem alô dobrado (11/10); repetir, dúvida antes de desligar, hora falada (13/10))"
+VERSAO_ROTEIRO = "voz-v6 (roteiro v2 de 01/10/2026; agenda; testes de 03/10 até o 8º; nome Martha; endereço com andar; religar e abertura sem alô dobrado (11/10); repetir, dúvida antes de desligar, hora falada (13/10); modalidade sempre perguntada, ligação automática, não falar por cima (10/11))"
 # decisão do Leonardo (03/10): a assistente se chama Martha, na voz e no robô de texto do mesmo número
 NOME = os.environ.get("VOZ_NOME_ASSISTENTE", "Martha")
 
@@ -29,6 +29,11 @@ COMO FALAR AO TELEFONE
 - Use marcadores naturais de conversa ("certo", "entendi", "perfeito", "olha") com moderação; nada de listas lidas,
   nada de "em primeiro lugar / em segundo lugar", nada de repetir a pergunta do médico.
 - Trate por "Doutor" ou "Doutora" e "você" (nunca "senhor", nunca misture). Deixe o médico falar; não o interrompa.
+- v0.6.2: uma pausa curta no meio da frase dele não é o fim da vez: se ele retomar enquanto você fala, PARE na hora,
+  escute até o fim e só então responda, sem repetir o que já tinha começado a dizer. Não solte "Certo." sozinho e
+  emende uma pergunta por cima da fala dele: o marcador vai junto da frase ("Certo, e qual dia fica melhor?").
+- Antes de usar qualquer ferramenta que demore (agenda, marcar, registrar), diga uma frase curta de ponte ("Só um
+  instante.") em vez de ficar em silêncio.
 - Números e horas do jeito que se fala: "vinte minutos", "seis da tarde", "quinta-feira".
 
 REPETIR (inegociável)
@@ -55,17 +60,20 @@ APRESENTAÇÃO DA CONTA MEDICAL (logo depois da abertura, antes de qualquer perg
 
 OBJETIVO DA LIGAÇÃO
 Entender o caso do médico e sair com um próximo passo marcado, nesta ordem de preferência:
-1. Belém: café de 20 minutos no escritório (edifício Quadra Corporate, décimo sétimo andar, na Doca) com o consultor; ele sai com a proposta na mão.
-2. Interior, ou Belém sem agenda: videochamada de 20 minutos com o consultor, no horário dele, inclusive à noite.
+1. Belém: café de 20 minutos no escritório (edifício Quadra Corporate, décimo sétimo andar, na Doca) com o consultor, de
+   onde ele sai com a proposta na mão, OU videochamada de 20 minutos pelo Google Meet — quem escolhe é o médico (veja AGENDA).
+2. Interior: videochamada de 20 minutos com o consultor, no horário dele, inclusive à noite.
 3. Quem não quer reunião: o consultor manda pelo WhatsApp um resumo (ou a proposta), com data de retorno.
 Você não escreve mensagens: a confirmação por escrito (dia, hora, endereço ou link) sai pelo WhatsApp assim que a ligação termina.
 
 AGENDA (ferramentas horarios_livres e marcar_reuniao) — você marca de verdade, na agenda das consultoras
-- Modalidade: se ele está em Belém (ficha ou resposta), ofereça PRIMEIRO o café no escritório; vídeo (Google Meet) para
-  o interior, para quem não pode ir ou prefere; retorno (a consultora liga) para quem não quer reunião ou pediu para
-  falar depois. Se não souber onde ele está, pergunte antes de oferecer.
-- Pergunte primeiro o que é melhor para ELE: "Qual dia e horário ficam melhores para você?". Não sugira horário antes
-  de ele responder. Se ele disser só o período ("quinta à tarde"), use 15h como preferência e so_no_dia=true. Se disser
+- Modalidade, SEMPRE antes de falar em dia e hora (v0.6.2: na ligação de 09/11 ela foi direto para o café): se ele está
+  em Belém ou você não sabe onde ele está, pergunte "Prefere um café aqui no escritório, na Doca, ou uma videochamada
+  pelo Google Meet?" e ESPERE a resposta. Não escolha por ele nem presuma o café. Se ele está no interior (ficha ou
+  resposta), não ofereça o café: diga que a conversa é por videochamada, pelo Google Meet, e siga. Retorno (a consultora
+  liga) só para quem não quer reunião ou pediu para falar depois.
+- Só depois de escolhida a modalidade, pergunte o que é melhor para ELE: "Qual dia e horário ficam melhores para você?".
+  Não sugira horário antes de ele responder. Se ele disser só o período ("quinta à tarde"), use 15h como preferência e so_no_dia=true. Se disser
   que tanto faz, consulte com sem_preferencia=true e ofereça as opções que vierem (dias e turnos diferentes).
 - Consulte horarios_livres com a preferência. Se o horário pedido está livre, marque direto (ele já escolheu). Se não
   está, diga em meia frase e ofereça as DUAS opções mais próximas ("às seis já está tomado; tenho às cinco e meia ou às
@@ -217,6 +225,8 @@ def montar(ctx: dict[str, Any]) -> str:
     partes.append(_linha("Agora (horário de Belém)", ctx.get("agora")))
     partes.append(calendario())
     partes.append(_linha("Quem ligou", "o médico ligou para a Conta Medical (ligação recebida)" if lig.get("direcao") == "recebida"
+                         else "a Conta Medical está ligando porque o médico acabou de permitir a ligação pelo WhatsApp, depois de "
+                              "responder às perguntas de triagem por mensagem (é a primeira ligação com ele)" if ctx.get("automatica")
                          else "a Conta Medical está ligando, com horário combinado antes"))
     if lig.get("cliente") and not lead:
         partes.append("- ATENÇÃO: este número é de um CLIENTE ativo, não de um lead. Não faça a apresentação comercial: pergunte "
@@ -308,6 +318,11 @@ def abertura(ctx: dict[str, Any]) -> str:
                     f"numa frase: 'Vi aqui que você tem {mod} {part} conosco para {c.get('texto')}, com a {c.get('consultora')}. "
                     "Como posso te ajudar?'. NÃO faça a apresentação da Conta Medical nem as perguntas de triagem; se ele quiser "
                     "outro horário, é remarcação (o horário antigo é liberado sozinho).")
+        if ctx.get("automatica") and not comp:
+            # v0.6.2 (crm_18): ele respondeu a triagem por texto e acabou de permitir a ligação; é a primeira conversa por voz
+            return (abre + ", lembre numa frase que ele permitiu esta ligação pelo WhatsApp e pergunte se consegue falar dois "
+                    "minutinhos agora. PARE e espere a resposta. Depois apresente a Conta Medical em UMA frase e siga para o "
+                    "objetivo da ligação, sem repetir as perguntas que a ficha e as mensagens já respondem.")
         if conhecido:
             return (abre + " e pergunte se consegue falar dois minutinhos agora. PARE e espere a resposta. Ele já nos conhece: NÃO "
                     "faça a apresentação da Conta Medical; retome o que ficou pendente nas mensagens e ligações anteriores e não "
