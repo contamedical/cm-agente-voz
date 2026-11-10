@@ -68,3 +68,9 @@ def test_regra_de_nao_falar_por_cima():
     txt = instrucoes.montar(ctx())
     assert "PARE na hora" in txt
     assert "frase curta de ponte" in txt
+
+
+def test_v064_pergunta_antes_e_nada_depois_do_tchau():
+    txt = instrucoes.montar(ctx())
+    assert "NUNCA leia uma lista de horários livres" in txt
+    assert '"no speech"' in txt and "encerrar_ligacao na hora" in txt

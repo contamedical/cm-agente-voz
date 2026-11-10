@@ -8,7 +8,7 @@ import recursos  # noqa: E402
 
 
 def test_versao():
-    assert agente.VERSAO == "0.6.3"
+    assert tuple(int(x) for x in agente.VERSAO.split(".")) >= (0, 6, 3)
 
 
 def test_medidor_guarda_picos_e_zera_a_janela():

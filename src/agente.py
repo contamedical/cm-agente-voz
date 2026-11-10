@@ -38,7 +38,7 @@ import banco
 import instrucoes
 import recursos
 
-VERSAO = "0.6.3"
+VERSAO = "0.6.4"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
