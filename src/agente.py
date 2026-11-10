@@ -36,8 +36,9 @@ except Exception:  # noqa: BLE001
 import alo
 import banco
 import instrucoes
+import recursos
 
-VERSAO = "0.6.2"
+VERSAO = "0.6.3"
 AGENTE = os.environ.get("VOZ_AGENTE_NOME", "cm-voz")
 MODELO = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
 VOZ = os.environ.get("GEMINI_VOZ", "Aoede")
@@ -730,7 +731,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 "p_ligacao_id": ligacao_id, "p_turnos": transcricao(session, est.humano_nome),
                 "p_custo_usd": round(dur_min * (PRECO_ENTRADA_MIN + PRECO_SAIDA_MIN), 4),
                 "p_meta": {"versao": VERSAO, "roteiro": instrucoes.VERSAO_ROTEIRO, "modelo": MODELO, "voz": VOZ,
-                           "minutos_agente": round(dur_min, 2), "uso": uso, "saida": motivo, "ferramentas": est.ferramentas[-40:],
+                           "minutos_agente": round(dur_min, 2), "uso": uso, "memoria_pico_mb": recursos.pico_proprio_mb(),   # v0.6.3 "saida": motivo, "ferramentas": est.ferramentas[-40:],
                            "custo": "estimado pelo tempo do agente na ligação"}})
             if not est.registrado and not est.humano_nome and getattr(est, "atendida", True):   # v0.4.0: não atendeu ≠ caiu
                 await banco.rpc("ligacao_registrar", {
@@ -880,14 +881,29 @@ async def passar_para_humano(est: Estado) -> None:
 
 
 def batidas() -> None:
-    """Sinal de vida a cada 30 s: sem ele, o wa-gateway recusa a ligação em vez de deixar o médico no silêncio."""
+    """Sinal de vida a cada 30 s: sem ele, o wa-gateway recusa a ligação em vez de deixar o médico no silêncio.
+
+    v0.6.3: leva junto a memória e a carga do contêiner (amostra a cada 5 s; manda o pico dos últimos 30 s e o pico desde
+    que o agente subiu), para medir quantas ligações ao mesmo tempo o servidor aguenta.
+    """
     ident = os.environ.get("VOZ_AGENTE_ID") or socket.gethostname()
+    med = recursos.Medidor()
     while True:
+        info: dict[str, Any] = {"modelo": MODELO, "voz": VOZ, "agente": AGENTE}
         try:
-            banco.batida(ident, VERSAO, {"modelo": MODELO, "voz": VOZ, "agente": AGENTE})
+            info["recursos"] = med.relatorio()
+        except Exception as e:  # noqa: BLE001
+            info["recursos"] = {"erro": str(e)[:200]}
+        try:
+            banco.batida(ident, VERSAO, info)
         except Exception as e:  # noqa: BLE001
             log.warning("batida falhou: %s", e)
-        time.sleep(30)
+        for _ in range(6):
+            time.sleep(5)
+            try:
+                med.amostrar()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 if __name__ == "__main__":

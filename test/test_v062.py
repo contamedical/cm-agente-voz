@@ -16,7 +16,7 @@ def ctx(**extra):
 
 
 def test_versao():
-    assert agente.VERSAO == "0.6.2"
+    assert tuple(int(x) for x in agente.VERSAO.split(".")) >= (0, 6, 2)
     assert "10/11" in instrucoes.VERSAO_ROTEIRO
 
 
